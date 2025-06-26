@@ -29,6 +29,13 @@ jobs:
           
           echo "=== 开始部署 Dify 到远程服务器 ==="
           
+          # 修复主机名解析问题
+          CURRENT_HOSTNAME=$(hostname)
+          if ! grep -q "$CURRENT_HOSTNAME" /etc/hosts; then
+              echo "127.0.0.1 $CURRENT_HOSTNAME" | sudo tee -a /etc/hosts
+              echo "已修复主机名解析: $CURRENT_HOSTNAME"
+          fi
+          
           # 定义变量
           PROJECT_DIR="/opt/dify"
           BACKUP_DIR="/opt/dify-backup-$(date +%Y%m%d_%H%M%S)"
@@ -108,9 +115,9 @@ jobs:
                   echo "停止现有服务..."
                   cd $PROJECT_DIR/docker
                   if command -v docker-compose &> /dev/null; then
-                      sudo docker-compose down || true
+                      sudo docker-compose -f docker-compose.yaml down || true
                   else
-                      sudo docker compose down || true
+                      sudo docker compose -f docker-compose.yaml down || true
                   fi
               fi
               
@@ -130,8 +137,11 @@ jobs:
               sudo rm -rf $PROJECT_DIR
           fi
           
+          # 切换到安全的工作目录
+          cd /opt
+          
           echo "克隆项目代码..."
-          git clone https://github.com/${{ github.repository }}.git $PROJECT_DIR
+          git clone https://github.com/${{ github.repository }}.git dify
           cd $PROJECT_DIR
           git checkout ${{ github.ref_name }}
           
@@ -153,13 +163,23 @@ jobs:
           # 获取服务器IP
           SERVER_IP=$(curl -s ifconfig.me 2>/dev/null || curl -s icanhazip.com 2>/dev/null || echo "localhost")
           
+          # 配置基本环境变量
+          sed -i "s/SECRET_KEY=.*/SECRET_KEY=$SECRET_KEY/" .env
+          sed -i "s/WEAVIATE_API_KEY=.*/WEAVIATE_API_KEY=$WEAVIATE_API_KEY/" .env
+          
           echo "环境变量文件已创建并配置完成"
           echo "服务器IP: $SERVER_IP"
           
           # 创建middleware.env文件
           echo "=== 创建中间件配置文件 ==="
           cp middleware.env.example middleware.env
-          echo "中间件配置文件已创建"
+          
+          # 配置数据库环境变量以消除警告
+          sed -i "s/DB_USERNAME=.*/DB_USERNAME=postgres/" middleware.env
+          sed -i "s/DB_PASSWORD=.*/DB_PASSWORD=difyai123456/" middleware.env
+          sed -i "s/DB_DATABASE=.*/DB_DATABASE=dify/" middleware.env
+          
+          echo "中间件配置文件已创建并配置完成"
           
           # 恢复备份的数据（如果存在）
           echo "=== 恢复备份数据 ==="
@@ -186,17 +206,17 @@ jobs:
           # 拉取最新镜像
           echo "=== 拉取 Docker 镜像 ==="
           if command -v docker-compose &> /dev/null; then
-              docker-compose pull
+              docker-compose -f docker-compose.yaml pull
           else
-              docker compose pull
+              docker compose -f docker-compose.yaml pull
           fi
           
           # 启动服务
           echo "=== 启动 Dify 服务 ==="
           if command -v docker-compose &> /dev/null; then
-              docker-compose up -d
+              docker-compose -f docker-compose.yaml up -d
           else
-              docker compose up -d
+              docker compose -f docker-compose.yaml up -d
           fi
           
           # 等待服务启动
@@ -206,17 +226,17 @@ jobs:
           # 检查服务状态
           echo "=== 检查服务状态 ==="
           if command -v docker-compose &> /dev/null; then
-              docker-compose ps
+              docker-compose -f docker-compose.yaml ps
           else
-              docker compose ps
+              docker compose -f docker-compose.yaml ps
           fi
           
           # 显示日志
           echo "=== 最近的服务日志 ==="
           if command -v docker-compose &> /dev/null; then
-              docker-compose logs --tail=50
+              docker-compose -f docker-compose.yaml logs --tail=50
           else
-              docker compose logs --tail=50
+              docker compose -f docker-compose.yaml logs --tail=50
           fi
           
           echo "=== 部署完成！==="
@@ -248,11 +268,11 @@ jobs:
           # 检查容器状态
           cd /opt/dify/docker
           if command -v docker-compose &> /dev/null; then
-              RUNNING_CONTAINERS=$(docker-compose ps --services --filter status=running | wc -l)
-              TOTAL_CONTAINERS=$(docker-compose ps --services | wc -l)
+              RUNNING_CONTAINERS=$(docker-compose -f docker-compose.yaml ps --services --filter status=running | wc -l)
+              TOTAL_CONTAINERS=$(docker-compose -f docker-compose.yaml ps --services | wc -l)
           else
-              RUNNING_CONTAINERS=$(docker compose ps --services --filter status=running | wc -l)
-              TOTAL_CONTAINERS=$(docker compose ps --services | wc -l)
+              RUNNING_CONTAINERS=$(docker compose -f docker-compose.yaml ps --services --filter status=running | wc -l)
+              TOTAL_CONTAINERS=$(docker compose -f docker-compose.yaml ps --services | wc -l)
           fi
           
           echo "运行中的容器: $RUNNING_CONTAINERS / $TOTAL_CONTAINERS"
@@ -261,14 +281,14 @@ jobs:
           echo "=== 检查服务健康状态 ==="
           
           # 检查数据库连接
-          if docker exec dify-db pg_isready -U postgres; then
+          if docker exec dify-db-1 pg_isready -U postgres; then
               echo "✅ 数据库服务正常"
           else
               echo "❌ 数据库服务异常"
           fi
           
           # 检查 Redis 连接
-          if docker exec dify-redis redis-cli ping | grep -q PONG; then
+          if docker exec dify-redis-1 redis-cli -a difyai123456 ping | grep -q PONG; then
               echo "✅ Redis 服务正常"
           else
               echo "❌ Redis 服务异常"
