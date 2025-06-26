@@ -150,19 +150,6 @@ jobs:
               # 获取服务器IP
               SERVER_IP=$(curl -s ifconfig.me 2>/dev/null || curl -s icanhazip.com 2>/dev/null || echo "localhost")
               
-              # 使用sed替换.env文件中的配置
-              sed -i "s|SECRET_KEY=.*|SECRET_KEY=$SECRET_KEY|g" .env
-              sed -i "s|WEAVIATE_API_KEY=.*|WEAVIATE_API_KEY=$WEAVIATE_API_KEY|g" .env
-              sed -i "s|WEAVIATE_AUTHENTICATION_APIKEY_ALLOWED_KEYS=.*|WEAVIATE_AUTHENTICATION_APIKEY_ALLOWED_KEYS=$WEAVIATE_API_KEY|g" .env
-              
-              # 替换API URLs
-              sed -i "s|CONSOLE_API_URL=.*|CONSOLE_API_URL=http://$SERVER_IP/console/api|g" .env
-              sed -i "s|CONSOLE_WEB_URL=.*|CONSOLE_WEB_URL=http://$SERVER_IP|g" .env
-              sed -i "s|SERVICE_API_URL=.*|SERVICE_API_URL=http://$SERVER_IP/v1|g" .env
-              sed -i "s|APP_API_URL=.*|APP_API_URL=http://$SERVER_IP/v1|g" .env
-              sed -i "s|APP_WEB_URL=.*|APP_WEB_URL=http://$SERVER_IP|g" .env
-              sed -i "s|FILES_URL=.*|FILES_URL=http://$SERVER_IP/files|g" .env
-              
               echo "环境变量文件已创建并配置完成"
               echo "服务器IP: $SERVER_IP"
           else
