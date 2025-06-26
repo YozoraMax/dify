@@ -141,35 +141,41 @@ jobs:
           echo "=== 配置环境变量 ==="
           if [ ! -f ".env" ]; then
               # 复制示例配置文件
-              cp middleware.env.example .env
+              cp .env.example .env
               
               # 生成随机密钥
               SECRET_KEY=$(openssl rand -base64 42)
               WEAVIATE_API_KEY=$(openssl rand -base64 32)
               
-              # 添加基本配置到 .env 文件
-              cat >> .env << EOF
-          
-          # =======================================================
-          # 基本配置 - 自动生成
-          # =======================================================
-          SECRET_KEY=$SECRET_KEY
-          WEAVIATE_AUTHENTICATION_APIKEY_ALLOWED_KEYS=$WEAVIATE_API_KEY
-          
-          # API URLs - 修改为你的域名或IP
-          CONSOLE_API_URL=http://localhost/console/api
-          CONSOLE_WEB_URL=http://localhost
-          SERVICE_API_URL=http://localhost/v1
-          APP_API_URL=http://localhost/v1
-          APP_WEB_URL=http://localhost
-          FILES_URL=http://localhost/files
-          
-          # 如果你有自定义配置，请在这里添加
-          EOF
+              # 获取服务器IP
+              SERVER_IP=$(curl -s ifconfig.me 2>/dev/null || curl -s icanhazip.com 2>/dev/null || echo "localhost")
               
-              echo "环境变量文件已创建"
+              # 使用sed替换.env文件中的配置
+              sed -i "s|SECRET_KEY=.*|SECRET_KEY=$SECRET_KEY|g" .env
+              sed -i "s|WEAVIATE_API_KEY=.*|WEAVIATE_API_KEY=$WEAVIATE_API_KEY|g" .env
+              sed -i "s|WEAVIATE_AUTHENTICATION_APIKEY_ALLOWED_KEYS=.*|WEAVIATE_AUTHENTICATION_APIKEY_ALLOWED_KEYS=$WEAVIATE_API_KEY|g" .env
+              
+              # 替换API URLs
+              sed -i "s|CONSOLE_API_URL=.*|CONSOLE_API_URL=http://$SERVER_IP/console/api|g" .env
+              sed -i "s|CONSOLE_WEB_URL=.*|CONSOLE_WEB_URL=http://$SERVER_IP|g" .env
+              sed -i "s|SERVICE_API_URL=.*|SERVICE_API_URL=http://$SERVER_IP/v1|g" .env
+              sed -i "s|APP_API_URL=.*|APP_API_URL=http://$SERVER_IP/v1|g" .env
+              sed -i "s|APP_WEB_URL=.*|APP_WEB_URL=http://$SERVER_IP|g" .env
+              sed -i "s|FILES_URL=.*|FILES_URL=http://$SERVER_IP/files|g" .env
+              
+              echo "环境变量文件已创建并配置完成"
+              echo "服务器IP: $SERVER_IP"
           else
               echo "环境变量文件已存在，跳过创建"
+          fi
+          
+          # 创建middleware.env文件
+          echo "=== 创建中间件配置文件 ==="
+          if [ ! -f "middleware.env" ]; then
+              cp middleware.env.example middleware.env
+              echo "中间件配置文件已创建"
+          else
+              echo "中间件配置文件已存在，跳过创建"
           fi
           
           # 创建必要的目录
