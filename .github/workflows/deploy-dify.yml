@@ -1,0 +1,284 @@
+name: Deploy Dify to Remote Ubuntu Server
+
+on:
+  push:
+    branches: [ main, develop ]
+  workflow_dispatch:
+
+env:
+  REGISTRY: ghcr.io
+  IMAGE_NAME: ${{ github.repository }}
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    
+    steps:
+    - name: Checkout repository
+      uses: actions/checkout@v4
+
+    - name: Deploy to Remote Server
+      uses: appleboy/ssh-action@v1.0.3
+      with:
+        host: ${{ secrets.REMOTE_HOST }}
+        username: ${{ secrets.REMOTE_USER }}
+        password: ${{ secrets.REMOTE_PASSWORD }}
+        port: ${{ secrets.REMOTE_PORT || '22' }}
+        script: |
+          set -e
+          
+          echo "=== 开始部署 Dify 到远程服务器 ==="
+          
+          # 定义变量
+          PROJECT_DIR="/opt/dify"
+          BACKUP_DIR="/opt/dify-backup-$(date +%Y%m%d_%H%M%S)"
+          
+          # 检查并安装 Docker
+          echo "=== 检查 Docker 安装状态 ==="
+          if ! command -v docker &> /dev/null; then
+              echo "Docker 未安装，正在安装..."
+              
+              # 更新包索引
+              sudo apt-get update
+              
+              # 安装必要的包
+              sudo apt-get install -y \
+                  ca-certificates \
+                  curl \
+                  gnupg \
+                  lsb-release
+              
+              # 添加 Docker 官方 GPG 密钥
+              sudo mkdir -p /etc/apt/keyrings
+              curl -fsSL https://download.docker.com/linux/ubuntu/gpg | sudo gpg --dearmor -o /etc/apt/keyrings/docker.gpg
+              
+              # 设置稳定版仓库
+              echo \
+                "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/docker.gpg] https://download.docker.com/linux/ubuntu \
+                $(lsb_release -cs) stable" | sudo tee /etc/apt/sources.list.d/docker.list > /dev/null
+              
+              # 更新包索引
+              sudo apt-get update
+              
+              # 安装 Docker Engine
+              sudo apt-get install -y docker-ce docker-ce-cli containerd.io docker-buildx-plugin
+              
+              # 启动并启用 Docker 服务
+              sudo systemctl start docker
+              sudo systemctl enable docker
+              
+              # 将当前用户添加到 docker 组
+              sudo usermod -aG docker $USER
+              
+              echo "Docker 安装完成"
+          else
+              echo "Docker 已安装: $(docker --version)"
+          fi
+          
+          # 检查并安装 Docker Compose
+          echo "=== 检查 Docker Compose 安装状态 ==="
+          if ! command -v docker-compose &> /dev/null && ! docker compose version &> /dev/null; then
+              echo "Docker Compose 未安装，正在安装..."
+              
+              # 下载 Docker Compose
+              DOCKER_COMPOSE_VERSION=$(curl -s https://api.github.com/repos/docker/compose/releases/latest | grep 'tag_name' | cut -d\" -f4)
+              sudo curl -L "https://github.com/docker/compose/releases/download/${DOCKER_COMPOSE_VERSION}/docker-compose-$(uname -s)-$(uname -m)" -o /usr/local/bin/docker-compose
+              
+              # 添加执行权限
+              sudo chmod +x /usr/local/bin/docker-compose
+              
+              # 创建软链接
+              sudo ln -sf /usr/local/bin/docker-compose /usr/bin/docker-compose
+              
+              echo "Docker Compose 安装完成"
+          else
+              if command -v docker-compose &> /dev/null; then
+                  echo "Docker Compose 已安装: $(docker-compose --version)"
+              else
+                  echo "Docker Compose Plugin 已安装: $(docker compose version)"
+              fi
+          fi
+          
+          # 备份现有部署（如果存在）
+          if [ -d "$PROJECT_DIR" ]; then
+              echo "=== 备份现有部署 ==="
+              sudo cp -r $PROJECT_DIR $BACKUP_DIR
+              echo "备份已保存到: $BACKUP_DIR"
+              
+              # 停止现有服务
+              cd $PROJECT_DIR/docker
+              if [ -f "docker-compose.yaml" ]; then
+                  if command -v docker-compose &> /dev/null; then
+                      sudo docker-compose down || true
+                  else
+                      sudo docker compose down || true
+                  fi
+              fi
+          fi
+          
+          # 创建项目目录
+          echo "=== 创建项目目录 ==="
+          sudo mkdir -p $PROJECT_DIR
+          sudo chown -R $USER:$USER $PROJECT_DIR
+          
+          # 克隆或更新代码
+          echo "=== 更新代码 ==="
+          if [ -d "$PROJECT_DIR/.git" ]; then
+              cd $PROJECT_DIR
+              git fetch origin
+              git reset --hard origin/${{ github.ref_name }}
+              git clean -fd
+          else
+              git clone https://github.com/${{ github.repository }}.git $PROJECT_DIR
+              cd $PROJECT_DIR
+              git checkout ${{ github.ref_name }}
+          fi
+          
+          # 进入 docker 目录
+          cd $PROJECT_DIR/docker
+          
+          # 创建环境变量文件
+          echo "=== 配置环境变量 ==="
+          if [ ! -f ".env" ]; then
+              # 复制示例配置文件
+              cp middleware.env.example .env
+              
+              # 生成随机密钥
+              SECRET_KEY=$(openssl rand -base64 42)
+              WEAVIATE_API_KEY=$(openssl rand -base64 32)
+              
+              # 添加基本配置到 .env 文件
+              cat >> .env << EOF
+          
+          # =======================================================
+          # 基本配置 - 自动生成
+          # =======================================================
+          SECRET_KEY=$SECRET_KEY
+          WEAVIATE_AUTHENTICATION_APIKEY_ALLOWED_KEYS=$WEAVIATE_API_KEY
+          
+          # API URLs - 修改为你的域名或IP
+          CONSOLE_API_URL=http://localhost/console/api
+          CONSOLE_WEB_URL=http://localhost
+          SERVICE_API_URL=http://localhost/v1
+          APP_API_URL=http://localhost/v1
+          APP_WEB_URL=http://localhost
+          FILES_URL=http://localhost/files
+          
+          # 如果你有自定义配置，请在这里添加
+          EOF
+              
+              echo "环境变量文件已创建"
+          else
+              echo "环境变量文件已存在，跳过创建"
+          fi
+          
+          # 创建必要的目录
+          echo "=== 创建数据目录 ==="
+          mkdir -p volumes/db/data
+          mkdir -p volumes/redis/data
+          mkdir -p volumes/weaviate
+          mkdir -p volumes/sandbox
+          
+          # 设置正确的权限
+          sudo chown -R 999:999 volumes/db/data 2>/dev/null || true
+          sudo chown -R 999:999 volumes/redis/data 2>/dev/null || true
+          
+          # 拉取最新镜像
+          echo "=== 拉取 Docker 镜像 ==="
+          if command -v docker-compose &> /dev/null; then
+              docker-compose pull
+          else
+              docker compose pull
+          fi
+          
+          # 启动服务
+          echo "=== 启动 Dify 服务 ==="
+          if command -v docker-compose &> /dev/null; then
+              docker-compose up -d
+          else
+              docker compose up -d
+          fi
+          
+          # 等待服务启动
+          echo "=== 等待服务启动 ==="
+          sleep 30
+          
+          # 检查服务状态
+          echo "=== 检查服务状态 ==="
+          if command -v docker-compose &> /dev/null; then
+              docker-compose ps
+          else
+              docker compose ps
+          fi
+          
+          # 显示日志
+          echo "=== 最近的服务日志 ==="
+          if command -v docker-compose &> /dev/null; then
+              docker-compose logs --tail=50
+          else
+              docker compose logs --tail=50
+          fi
+          
+          echo "=== 部署完成！==="
+          echo "请访问 http://$(curl -s ifconfig.me)/install 进行初始化设置"
+          echo "或访问 http://localhost/install （如果你在本地访问）"
+          
+          # 清理旧的备份（保留最新的3个）
+          echo "=== 清理旧备份 ==="
+          cd /opt
+          sudo find . -maxdepth 1 -name "dify-backup-*" -type d | sort | head -n -3 | xargs -r sudo rm -rf
+          
+          echo "=== 部署流程完成 ==="
+
+    - name: Health Check
+      uses: appleboy/ssh-action@v1.0.3
+      with:
+        host: ${{ secrets.REMOTE_HOST }}
+        username: ${{ secrets.REMOTE_USER }}
+        password: ${{ secrets.REMOTE_PASSWORD }}
+        port: ${{ secrets.REMOTE_PORT || '22' }}
+        script: |
+          set -e
+          
+          echo "=== 执行健康检查 ==="
+          
+          # 等待服务完全启动
+          sleep 60
+          
+          # 检查容器状态
+          cd /opt/dify/docker
+          if command -v docker-compose &> /dev/null; then
+              RUNNING_CONTAINERS=$(docker-compose ps --services --filter status=running | wc -l)
+              TOTAL_CONTAINERS=$(docker-compose ps --services | wc -l)
+          else
+              RUNNING_CONTAINERS=$(docker compose ps --services --filter status=running | wc -l)
+              TOTAL_CONTAINERS=$(docker compose ps --services | wc -l)
+          fi
+          
+          echo "运行中的容器: $RUNNING_CONTAINERS / $TOTAL_CONTAINERS"
+          
+          # 检查关键服务的健康状态
+          echo "=== 检查服务健康状态 ==="
+          
+          # 检查数据库连接
+          if docker exec dify-db pg_isready -U postgres; then
+              echo "✅ 数据库服务正常"
+          else
+              echo "❌ 数据库服务异常"
+          fi
+          
+          # 检查 Redis 连接
+          if docker exec dify-redis redis-cli ping | grep -q PONG; then
+              echo "✅ Redis 服务正常"
+          else
+              echo "❌ Redis 服务异常"
+          fi
+          
+          # 检查 API 服务
+          if curl -f -s http://localhost/health > /dev/null; then
+              echo "✅ API 服务正常"
+          else
+              echo "⚠️  API 服务可能还在启动中，请稍后检查"
+          fi
+          
+          echo "=== 健康检查完成 ===" 
